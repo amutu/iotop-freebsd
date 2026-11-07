@@ -16,9 +16,11 @@ You should have received a copy of the GNU General Public License along with thi
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <syscall.h>
 #include <sys/types.h>
 
+#ifdef __linux__
+
+#include <syscall.h>
 #include <linux/capability.h>
 
 inline int system_checks(void) {
@@ -75,3 +77,32 @@ inline int system_checks(void) {
 	}
 	return 0;
 }
+
+#else /* __FreeBSD__ */
+
+inline int system_checks(void) {
+	if (geteuid()!=0) {
+		printf(
+			"iotop on FreeBSD reads the byte counters of the tasks through dtrace,\n"
+			"which needs root privileges. Run it as root or through sudo.\n"
+			"\n"
+			"If you only need the list of the tasks and their command lines, they are\n"
+			"readable by any user, but the byte counters are not.\n");
+		return EACCES;
+	}
+
+	if (access("/usr/sbin/dtrace",X_OK)) {
+		printf("Could not run iotop: dtrace is not installed (it is part of the base system in FreeBSD).\n");
+		return 1;
+	}
+	if (access("/dev/dtrace/dtrace",R_OK)) {
+		printf(
+			"Could not run iotop: /dev/dtrace/dtrace is not readable, dtrace can not be used.\n"
+			"The dtrace kernel modules are probably not loaded (they do not survive a reboot);\n"
+			"load them with: kldload dtraceall\n");
+		return 1;
+	}
+	return 0;
+}
+
+#endif // __linux__

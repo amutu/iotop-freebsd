@@ -21,6 +21,30 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifdef __FreeBSD__
+
+/*
+ * FreeBSD has no delay accounting: nothing counts the time a task spends
+ * waiting for the block layer or for a swap in. Returning "not available" from
+ * has_task_delayacct() makes the views hide the SWAPIN and IO columns instead
+ * of showing a permanent 0.00%.
+ */
+
+inline int has_task_delayacct(void) {
+	return 0;
+}
+
+inline int read_task_delayacct(void) {
+	return 0; // the views hide the SWAPIN and IO columns when this is 0
+}
+
+inline int write_task_delayacct(int da) {
+	(void)da;
+	return ENOENT;
+}
+
+#else /* __linux__ */
+
 static inline int _read_task_delayacct(int *da) {
 	char buf[10],*t;
 	ssize_t bs;
@@ -90,3 +114,5 @@ inline int write_task_delayacct(int da) {
 	close(fd);
 	return ENODATA;
 }
+
+#endif // __FreeBSD__

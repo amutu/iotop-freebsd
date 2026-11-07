@@ -14,6 +14,10 @@ You should have received a copy of the GNU General Public License along with thi
 #ifndef __IOTOP_H__
 #define __IOTOP_H__
 
+#ifdef __linux__
+// glibc only: the FreeBSD headers do arithmetic with _POSIX_C_SOURCE, and an
+// empty definition of it breaks every #if that compares it; the default
+// visibility of the base system already provides everything used here
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -22,6 +26,7 @@ You should have received a copy of the GNU General Public License along with thi
 #endif
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #endif
 
 #include <regex.h>
@@ -351,6 +356,35 @@ inline int ioprio2prio(int ioprio);
 /* vmstat.c */
 
 inline int get_vm_counters(uint64_t *pgpgin,uint64_t *pgpgou);
+
+#ifdef __FreeBSD__
+
+struct kinfo_proc;
+
+/* bsd_io.c - the syscall level byte counters taken from a dtrace child */
+
+inline int bsd_io_init(void);
+inline int bsd_io_warmup(int ms);
+inline void bsd_io_drain(void);
+inline void bsd_io_fini(void);
+inline int bsd_io_get(pid_t tid,uint64_t *rd,uint64_t *wr);
+inline int bsd_io_is_dead(void);
+inline uint64_t bsd_io_drops(void);
+inline void bsd_io_prune(void);
+
+/* bsd_proc.c - the task list taken from sysctl(KERN_PROC_ALL) */
+
+inline int bsd_proc_snapshot(void);
+inline void bsd_proc_release(void);
+inline int64_t bsd_proc_wall(void);
+inline struct kinfo_proc *bsd_proc_find(pid_t tid);
+inline struct kinfo_proc *bsd_proc_find_ktid(pid_t tid);
+inline int bsd_proc_count(void);
+inline struct kinfo_proc *bsd_proc_at(int i);
+inline pid_t bsd_proc_rtid_at(int i);
+inline pid_t bsd_proc_pid_of(pid_t tid);
+
+#endif // __FreeBSD__
 
 /* checks.c */
 

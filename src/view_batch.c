@@ -20,6 +20,11 @@ You should have received a copy of the GNU General Public License along with thi
 #include <string.h>
 #include <unistd.h>
 
+#ifdef __FreeBSD__
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
+
 static int pidw=6; // the width of the TID column, fixed for the run so that the output can be parsed
 
 // the batch view never shows exited tasks, threads only when processes are not aggregated, and the filtered ones
@@ -30,13 +35,18 @@ static int batch_keep(const struct xxxid_stats *s) {
 static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,struct act_stats *act) {
 	double time_s=timediff_in_s(act->ts_o,act->ts_c);
 	uint64_t tot_r,tot_w,tot_a_r,tot_a_w; // bytes of the cycle, or accumulated
-	double total_a_read,total_a_write;
-	char str_a_read[4],str_a_write[4];
 	double total_read,total_write;
 	char str_read[4],str_write[4];
-	int pr_tr,pr_tw,pr_ar,pr_aw; // the decimals of the totals
+	int pr_tr,pr_tw; // the decimals of the totals
+#ifndef __FreeBSD__
+	// the device level totals exist only where /proc/vmstat does
+	double total_a_read,total_a_write;
+	char str_a_read[4],str_a_write[4];
+	int pr_ar,pr_aw;
+#endif
 	static int firsthdr=1;
 	char tstr[16]=""; // time prefix of each line with --time
+	int has_tda=has_task_delayacct(); // no delay accounting, no SWAPIN/IO columns
 	struct tm *tm;
 	time_t t;
 	int i;
@@ -46,13 +56,17 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 	calc_a_total(act,&tot_a_r,&tot_a_w);
 	total_read=config.f.accumulated?(double)tot_r:(double)tot_r/time_s;
 	total_write=config.f.accumulated?(double)tot_w:(double)tot_w/time_s;
+#ifndef __FreeBSD__
 	total_a_read=(double)tot_a_r/time_s;
 	total_a_write=(double)tot_a_w/time_s;
+#endif
 
 	pr_tr=humanize_val(&total_read,str_read,1);
 	pr_tw=humanize_val(&total_write,str_write,1);
+#ifndef __FreeBSD__
 	pr_ar=humanize_val(&total_a_read,str_a_read,0);
 	pr_aw=humanize_val(&total_a_write,str_a_write,0);
+#endif
 
 	if (config.f.timestamp) { // the same time for all lines of the iteration
 		t=time(NULL);
@@ -65,9 +79,13 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		printf("%s",tstr);
 		printf(HEADER1_FORMAT,pr_tr,total_read,str_read,"",pr_tw,total_write,str_write,"");
 		printf("\n");
+#ifndef __FreeBSD__
+		// the device level counters of HEADER2 come from /proc/vmstat; the
+		// FreeBSD port has no such counter and would show a permanent 0.00
 		printf("%s",tstr);
 		printf(HEADER2_FORMAT,pr_ar,total_a_read,str_a_read,"",pr_aw,total_a_write,str_a_write,"");
 		printf("\n");
+#endif
 	}
 
 	if (config.f.quiet==0||(config.f.quiet==1&&firsthdr)) {
@@ -78,7 +96,9 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		printf(" %11s","DISK WRITE");
 		if (!config.f.hidevfswrite)
 			printf(" %11s","VFS WRITE");
-		printf(" %6s %6s %s\n","SWAPIN","IO","COMMAND");
+		if (has_tda)
+			printf(" %6s %6s","SWAPIN","IO");
+		printf(" %s\n","COMMAND");
 	}
 
 	iotop_sort(cs,config.f.processes,batch_keep);
@@ -144,7 +164,10 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		printf(" %7.*f %-3.3s",pr_w,write_val,write_str);
 		if (!config.f.hidevfswrite)
 			printf(" %7.*f %-3.3s",pr_vw,vfs_write_val,vfs_write_str);
-		printf(" %2.2f %% %2.2f %% %s\n",swapin_val,blkio_val,cmdt?cmdt:"(null)");
+		if (has_tda)
+			printf(" %2.2f %% %2.2f %% %s\n",swapin_val,blkio_val,cmdt?cmdt:"(null)");
+		else
+			printf(" %s\n",cmdt?cmdt:"(null)");
 
 		if (cmdt)
 			free(cmdt);
@@ -155,6 +178,18 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 }
 
 inline void view_batch_init(void) {
+#ifdef __FreeBSD__
+	int pm=0;
+	size_t pmsz=sizeof pm;
+
+	// all the pids are below pid_max; the thread tids come from a counter
+	// of their own that starts above pid_max and is not bounded by it, so
+	// the column needs a digit more than pid_max alone suggests
+	if (!sysctlbyname("kern.pid_max",&pm,&pmsz,NULL,0)&&pm>0)
+		for (pm--;pm>=1000000;pm/=10)
+			pidw++;
+	pidw++;
+#else
 	FILE *f=fopen("/proc/sys/kernel/pid_max","r");
 	long pm=0;
 
@@ -164,7 +199,8 @@ inline void view_batch_init(void) {
 				pidw++;
 		fclose(f);
 	}
-	if (!read_task_delayacct())
+#endif
+	if (has_task_delayacct()&&!read_task_delayacct())
 		fprintf(stderr,"Warning: task_delayacct is 0, enable by: echo 1 > /proc/sys/kernel/task_delayacct\n");
 }
 
@@ -189,6 +225,9 @@ inline void view_batch_loop(void) {
 	struct act_stats act={0,0,0,0,0,0,0,};
 	struct timespec ts;
 	int warned=0;
+#ifdef __FreeBSD__
+	int iowarned=0; // the death of the dtrace backend is reported once
+#endif
 
 	for (;!stop_req;) {
 		cs=fetch_data(ps,params.pid); // the filter of -p does not change in batch mode, read only its process
@@ -201,6 +240,12 @@ inline void view_batch_loop(void) {
 		get_vm_counters(&act.read_bytes,&act.write_bytes);
 		act.ts_c=monotime();
 		view_batch(cs,ps,&act);
+#ifdef __FreeBSD__
+		if (!iowarned&&bsd_io_is_dead()) {
+			iowarned=1;
+			fprintf(stderr,"iotop: the dtrace byte counter backend exited; the counters no longer grow\n");
+		}
+#endif
 
 		if (ps)
 			arr_free(ps);

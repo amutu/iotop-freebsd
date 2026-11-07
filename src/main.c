@@ -656,6 +656,7 @@ inline void sig_handler(int signo) {
 		case SIGINT:
 		case SIGHUP:
 		case SIGQUIT:
+		case SIGTERM:
 			stop_req=1;
 	}
 }
@@ -668,14 +669,18 @@ int main(int argc,char *argv[]) {
 		return EXIT_FAILURE;
 
 	setlocale(LC_ALL,"");
-	nl_init();
-
+	// on FreeBSD the byte counter backend starts a child and waits for it to
+	// produce the first counters, so the signals have to be handled before it
+	// starts; on Linux the same order is harmless
 	if (signal(SIGINT,sig_handler)==SIG_ERR)
 		perror("signal");
 	if (signal(SIGHUP,sig_handler)==SIG_ERR)
 		perror("signal");
 	if (signal(SIGQUIT,sig_handler)==SIG_ERR)
 		perror("signal");
+	if (signal(SIGTERM,sig_handler)==SIG_ERR)
+		perror("signal");
+	nl_init();
 
 	if (config.f.timestamp||config.f.quiet)
 		config.f.batch_mode=1;

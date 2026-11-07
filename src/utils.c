@@ -55,6 +55,8 @@ static inline void comm_apply(char *buf,ssize_t len,char **cmd_long,char **cmd_s
 	}
 }
 
+#ifdef __linux__
+
 // read the cmdline of process pid into cmd_long and cmd_short
 // returns 1 if the cmdline was read and is not empty
 inline int read_cmdline(int pid,char **cmd_long,char **cmd_short) {
@@ -258,6 +260,138 @@ inline void pidgen_cb(pg_cb cb,struct xxxid_stats_arr *hint,pid_t only) {
 	}
 }
 
+#else /* __FreeBSD__ */
+
+#include <errno.h>
+#include <signal.h>
+#include <sys/param.h>
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#include <libutil.h>
+
+// read the argv of task pid through kern.proc.args; returns 1 if it is not empty
+inline int read_cmdline(int pid,char **cmd_long,char **cmd_short) {
+	int mib[3]={CTL_KERN,KERN_PROC_ARGS,(int)pid};
+	size_t sz=0;
+	char *dbuf;
+	ssize_t p;
+	int res=0;
+	pid_t real;
+
+	// the argument may be a thread id; the argv is per process
+	real=bsd_proc_pid_of(pid);
+	if (real>0)
+		mib[2]=(int)real;
+
+	// kernel threads and tasks that exited have no argv at all
+	if (sysctl(mib,3,NULL,&sz,NULL,0)||!sz)
+		return 0;
+	dbuf=malloc(sz+1);
+	if (!dbuf)
+		return 0;
+	if (sysctl(mib,3,dbuf,&sz,NULL,0)) {
+		free(dbuf);
+		return 0;
+	}
+	p=(ssize_t)sz;
+	while (p>0&&!dbuf[p-1]) // the end of the last argument, also the padding of a rewritten cmdline, is not a separator
+		p--;
+
+	if (p>0) {
+		ssize_t k;
+		dbuf[p]=0;
+
+		*cmd_short=strdup(dbuf);
+		if (*cmd_short) {
+			char *ep,*sp;
+
+			// a process that rewrote its cmdline as one string has nothing after argv[0];
+			// its arguments are separated by spaces, so look for the path only before the first one
+			for (k=(ssize_t)strlen(dbuf);k<p&&!dbuf[k];k++)
+				;
+			sp=k<p?NULL:strchr(*cmd_short,' ');
+			if (sp)
+				*sp=0;
+			ep=strrchr(*cmd_short,'/');
+			if (sp)
+				*sp=' ';
+			if (ep&&ep[1]) {
+				char *t=strdup(ep+1);
+
+				if (t) {
+					free(*cmd_short);
+					*cmd_short=t;
+				}
+			}
+		}
+
+		for (k=0;k<p;k++)
+			dbuf[k]=dbuf[k]?dbuf[k]:' ';
+		*cmd_long=buf_to_str(dbuf,p);
+		res=!!*cmd_short;
+	} else
+		free(dbuf);
+	return res;
+}
+
+// apply the name of task pid to its cmdlines; comm, when not empty, is the name that is already known
+inline void read_comm(int pid,const char *comm,char **cmd_long,char **cmd_short,char **cmd_comm) {
+	char *dbuf;
+	struct kinfo_proc *kp;
+
+	if (comm&&*comm) {
+		dbuf=strdup(comm);
+
+		if (dbuf)
+			comm_apply(dbuf,(ssize_t)strlen(dbuf),cmd_long,cmd_short,cmd_comm);
+		return;
+	}
+
+	kp=bsd_proc_find(pid);
+	if (kp)
+		dbuf=strdup(kp->ki_comm);
+	else { // outside of a cycle
+		kp=kinfo_getproc(pid);
+		if (!kp)
+			return;
+		dbuf=strdup(kp->ki_comm);
+		free(kp);
+	}
+	if (dbuf)
+		comm_apply(dbuf,(ssize_t)strlen(dbuf),cmd_long,cmd_short,cmd_comm);
+}
+
+// call cb for each task, or with only>0 for the tasks of the process of task only
+inline void pidgen_cb(pg_cb cb,struct xxxid_stats_arr *hint,pid_t only) {
+	int i,cnt;
+	pid_t sel=-1;
+
+	if (bsd_proc_snapshot()<0)
+		return;
+	cnt=bsd_proc_count();
+	bsd_io_prune(); // the tasks that are gone must not pass their counters to a reused tid
+
+	if (only>0) { // all the threads of the process, they count in its totals
+		sel=bsd_proc_pid_of(only);
+		if (sel<0) {
+			bsd_proc_release();
+			return;
+		}
+	}
+	for (i=0;i<cnt&&!stop_req;i++) { // the cycle is dropped on a signal, do not read all of it
+		struct kinfo_proc *p=bsd_proc_at(i);
+
+		if (!p)
+			continue;
+		if (sel>0&&p->ki_pid!=sel)
+			continue;
+		cb(p->ki_pid,bsd_proc_rtid_at(i),hint);
+	}
+	bsd_proc_release();
+}
+
+#endif // __linux__
+
 inline int64_t monotime(void) {
 	struct timespec ts;
 	int64_t res;
@@ -442,12 +576,27 @@ inline int is_a_dir(const char *p) {
 	return (st.st_mode&S_IFMT)==S_IFDIR;
 }
 
+#ifdef __linux__
+
 inline int is_a_process(pid_t tid) {
 	char path[35];
 
 	snprintf(path,sizeof path,"/proc/%d/stat",tid);
 	return is_a_file(path);
 }
+
+#else /* __FreeBSD__ */
+
+inline int is_a_process(pid_t tid) {
+	struct kinfo_proc *kp=kinfo_getproc(tid);
+
+	if (!kp)
+		return 0;
+	free(kp);
+	return 1;
+}
+
+#endif // __linux__
 
 // the length of a cycle in milliseconds; never 0, values are divided by it
 inline uint64_t timediff_in_ms(uint64_t sta,uint64_t end) {

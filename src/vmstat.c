@@ -26,6 +26,13 @@ You should have received a copy of the GNU General Public License along with thi
 #define PGOU "\npgpgout "
 
 inline int get_vm_counters(uint64_t *pgpgin,uint64_t *pgpgou) {
+#ifdef __FreeBSD__
+	// there is no /proc/vmstat and no device level byte counter in this port;
+	// fail fast instead of an open() that can never succeed, once per second
+	(void)pgpgin;
+	(void)pgpgou;
+	return ENOSYS;
+#else
 	ssize_t bs=BSIZ,bp=0;
 	char *buf,*pi,*po,*t;
 	int fd;
@@ -92,4 +99,5 @@ inline int get_vm_counters(uint64_t *pgpgin,uint64_t *pgpgou) {
 	free(buf);
 	close(fd);
 	return 0;
+#endif // __FreeBSD__
 }

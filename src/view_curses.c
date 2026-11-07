@@ -109,6 +109,10 @@ static int ionice_prio=0;
 static int ionice_id_changed=0;
 static int ionice_id_ok=0; // the typed id is of a live task, with its priority shown
 static int ionice_line=1;
+#ifdef __FreeBSD__
+// the i key has nothing to do on FreeBSD; the notice it shows instead expires here
+static int64_t ionice_na_until=0;
+#endif
 static int in_filter=0; // filter by pid/uid interface flag and state vars
 static char filter_uid[50];
 static char filter_pid[50];
@@ -943,6 +947,9 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct act_stats *act,
 	pr_aw=humanize_val(&total_a_write,str_a_write,0);
 
 	gr_width_h=gr_width;
+#ifndef __FreeBSD__
+	// the single row formats interleave the device level Current counters,
+	// which the FreeBSD port does not have; keep the two row header there
 	if (maxy<10||maxx<(int)strlen(HEADER1_FORMAT)+2*(7-5+3-2+(!config.f.hidegraph?gr_width_h+1:0)-2)) {
 		int size_off;
 
@@ -985,6 +992,7 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct act_stats *act,
 				gr_width_h++;
 			}
 	}
+#endif // __FreeBSD__
 
 	for (i=0;i<((has_unicode&&config.f.unicode)?gr_width_h*2:gr_width_h);i++) {
 		if (mx_t_r<hist_t_r[i])
@@ -1050,7 +1058,19 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct act_stats *act,
 
 		if (!in_ionice&&!in_filter&&!in_search) {
 			mvhline(1,0,' ',maxx);
+#ifdef __FreeBSD__
+			// no device level counters on FreeBSD; the row reports the state
+			// of the dtrace byte counter backend instead of a permanent 0.00
+			if (bsd_io_is_dead()) {
+				attron(config.f.nocolor?A_BOLD:COLOR_PAIR(RED_PAIR));
+				mvprintw(1,0,"I/O accounting stopped: the dtrace backend exited, the counters are frozen");
+				attroff(config.f.nocolor?A_BOLD:COLOR_PAIR(RED_PAIR));
+			} else
+				if (bsd_io_drops())
+					mvprintw(1,0,"dtrace reported %llu drops; the counters undercount",(unsigned long long)bsd_io_drops());
+#else
 			mvprintw(1,0,HEADER2_FORMAT,pr_ar,total_a_read,str_a_read,!config.f.hidegraph?pg_a_r:"",pr_aw,total_a_write,str_a_write,!config.f.hidegraph?pg_a_w:"");
+#endif
 			show=FALSE;
 		}
 	}
@@ -1803,6 +1823,15 @@ donedraw:
 				free(ss);
 		}
 	}
+#ifdef __FreeBSD__
+	if (ionice_na_until) { // the i key notice; outlives a single draw, then goes away
+		if (monotime()<ionice_na_until&&!in_ionice&&!in_filter&&!in_search) {
+			mvhline(ionice_line,0,' ',maxx);
+			mvprintw(ionice_line,0,"iotop can not set the I/O priority on FreeBSD: the kernel has no per-task I/O scheduling");
+		} else
+			ionice_na_until=0;
+	}
+#endif
 	draw_vscroll(maxx-1,head1row?2:3,maxy-1-(noinlinehelp==0&&config.f.helptype==2?2:0),dispcount,saveskip);
 	if (config.f.helptype==2) {
 		if (config.f.inverse)
@@ -2462,6 +2491,12 @@ static inline int curses_key(int ch) {
 			break;
 		case 'i':
 		case 'I':
+#ifdef __FreeBSD__
+			// set_ioprio is a stub: the kernel has no per-task I/O scheduling,
+			// so show a notice instead of a dialog that could never take effect
+			if (!in_filter)
+				ionice_na_until=monotime()+2000;
+#else
 			if (!config.f.norenice&&!in_filter) {
 				in_ionice=1;
 				ionice_id[0]=0;
@@ -2470,6 +2505,7 @@ static inline int curses_key(int ch) {
 				ionice_pos=-1;
 				ionice_col=0;
 			}
+#endif
 			break;
 		case 'e':
 		case 'E':
@@ -2833,8 +2869,11 @@ inline void view_curses_loop(void) {
 		int64_t wait;
 
 		if (!read_task_delayacct()) {
+#ifndef __FreeBSD__
+			// a notice that the accounting was switched off; FreeBSD has none at all
 			if (has_tda)
 				showtda=1;
+#endif
 			has_tda=0;
 		} else {
 			showtda=0;

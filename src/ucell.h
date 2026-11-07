@@ -13,6 +13,8 @@ You should have received a copy of the GNU General Public License along with thi
 #ifndef ___UCELL_H___
 #define ___UCELL_H___
 
+#ifdef __linux__
+// glibc only, see the same block in iotop.h
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -21,6 +23,7 @@ You should have received a copy of the GNU General Public License along with thi
 #endif
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #endif
 
 #include <inttypes.h>

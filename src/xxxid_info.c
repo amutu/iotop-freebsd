@@ -22,6 +22,9 @@ You should have received a copy of the GNU General Public License along with thi
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#ifdef __linux__
+
 #include <sys/socket.h>
 #include <linux/taskstats.h>
 #include <linux/genetlink.h>
@@ -32,6 +35,22 @@ You should have received a copy of the GNU General Public License along with thi
 
 #include "taskstats-v14.h"
 #include "taskstats-v15.h"
+
+#else /* __FreeBSD__ */
+
+#include <sys/param.h>
+#include <sys/time.h>
+#include <sys/user.h>
+
+#include <time.h>
+
+// the kernel side has no per-task byte counters, so the length of the comm that
+// taskstats would give comes from here; kinfo_proc keeps the name in 20 bytes
+#define TS_COMM_LEN 24
+
+#endif
+
+#ifdef __linux__
 
 /*
  * Generic macros for dealing with netlink sockets. Might be duplicated
@@ -297,6 +316,84 @@ inline void nl_fini(void) {
 	if (nl_sock>-1)
 		close(nl_sock);
 }
+
+#else /* __FreeBSD__ */
+
+/*
+ * The FreeBSD side of the same interface. The task list and the metadata come
+ * from sysctl(KERN_PROC_ALL) (bsd_proc.c), the bytes come from the dtrace child
+ * (bsd_io.c). What taskstats calls read_bytes/read_char is a single number
+ * here: the syscall level bytes, which is the VFS counter of iotop. There is
+ * no block layer counter to pair it with, so both columns show this one.
+ */
+
+static int have_exe=1; // the extent of the task is always known, see below
+
+// a value that changes when the tid is reused or the task exec-ed; only compared for equality
+static inline uint64_t exe_id(const struct kinfo_proc *kp) {
+	// ki_start survives execve, so fold in the command name (FNV-1a): an exec
+	// that replaces the program changes ki_comm and with it the id
+	const unsigned char *s=(const unsigned char *)kp->ki_comm;
+	uint64_t h=1469598103934665603ULL;
+
+	while (*s) {
+		h^=*s++;
+		h*=1099511628211ULL;
+	}
+	return (((uint64_t)kp->ki_start.tv_sec<<32)^(uint64_t)kp->ki_start.tv_usec)^h;
+}
+
+inline void nl_init(void) {
+	if (bsd_io_init()) {
+		fprintf(stderr,"nl_init: could not start the dtrace byte counter backend\n");
+		exit(EXIT_FAILURE);
+	}
+	// the first counters arrive with the first dtrace tick; a child that dies
+	// earlier (no permission, no dtrace) has to be reported before the UI starts
+	if (bsd_io_warmup(500)) {
+		bsd_io_fini();
+		exit(EXIT_FAILURE);
+	}
+}
+
+inline void nl_fini(void) {
+	bsd_io_fini();
+}
+
+inline int nl_xxxid_info(pid_t tid,pid_t pid,struct xxxid_stats *stats,char *comm) {
+	struct kinfo_proc *kp;
+	const char *name;
+	uint64_t rd=0,wr=0;
+
+	*comm=0;
+	stats->pid=pid; // also when the query fails, the task is kept while it exists
+	stats->tid=tid;
+
+	kp=bsd_proc_find(tid);
+	if (!kp)
+		return -1;
+
+	// the byte counters of the kernel are keyed by the tid of the kernel, which
+	// differs from the one iotop sees for the first thread of a process
+	bsd_io_get(kp->ki_tid,&rd,&wr);
+	stats->read_bytes=rd;
+	stats->write_bytes=wr;
+	stats->read_char=rd;
+	stats->write_char=wr;
+	stats->ruid=kp->ki_ruid;
+	stats->io_prio=ioprio_from_sched(kp->ki_pri.pri_class,kp->ki_nice);
+	// the start on the monotonic clock, like taskstats gives it: the wall clock
+	// of the snapshot minus the begin time of the task, moved to the mono clock
+	stats->start=monotime()-((int64_t)bsd_proc_wall()-((int64_t)kp->ki_start.tv_sec*1000+kp->ki_start.tv_usec/1000));
+	stats->exe=exe_id(kp);
+
+	// a thread that was given a name keeps it, the rest use the process name
+	name=kp->ki_tdname[0]&&strcmp(kp->ki_tdname,kp->ki_comm)?kp->ki_tdname:kp->ki_comm;
+	snprintf(comm,TS_COMM_LEN+1,"%s",name);
+	return 0;
+}
+
+#endif // __linux__
 
 inline void free_stats(struct xxxid_stats *s) {
 	if (s->cmdline_short)
@@ -582,6 +679,9 @@ inline struct xxxid_stats_arr *fetch_data(struct xxxid_stats_arr *prev,pid_t onl
 	struct xxxid_stats_arr *a=arr_alloc();
 	int i,j=0;
 
+#ifdef __FreeBSD__
+	bsd_io_drain(); // the counters of the elapsed cycle came from the dtrace child
+#endif
 	current_cycle++;
 
 	if (!a)

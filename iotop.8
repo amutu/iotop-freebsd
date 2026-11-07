@@ -608,6 +608,53 @@ nice values.
 .BR atop (1),
 .BR htop (1),
 .BR getpwuid (3)
+.SH NOTES ON FREEBSD
+This build takes the byte counters from a
+.BR dtrace (1)
+script, because the kernel has no per task io accounting: the block operation
+counters of
+.BR getrusage (2)
+are not maintained for regular files, and
+.BR rctl (8)
+keeps decaying rates rather than cumulative bytes. The counters are the bytes
+moved by the read and write family of system calls, the bytes that
+.BR sendfile (2)
+reports through its
+.I sbytes
+result, and the bytes that the asynchronous read and write pair report through
+.BR aio_return (2),
+which is what the VFS
+READ and VFS WRITE columns of the Linux build show. There is no block layer
+counter to pair them with, so the DISK READ and DISK WRITE columns report the
+same numbers, one second behind at worst.
+.BR sendfile (2)
+calls that pass no
+.I sbytes
+pointer can not be counted, and asynchronous results fetched through
+.BR lio_listio (2)
+bookkeeping instead of
+.BR aio_return (2)
+are not counted either.
+.PP
+Root is required, and
+.BR dtrace (1)
+must be available.
+The SWAPIN and IO columns are not shown, as FreeBSD has no delay accounting.
+The PRIO column is derived from the scheduling class and the nice value,
+because there is no
+.BR ioprio (2);
+for the same reason the io priority of a task can not be changed from the
+interface, and the i key shows a notice instead of the ionice dialog.
+.PP
+There is no device level byte counter either, so the Current DISK READ and
+Current DISK WRITE header lines are not shown; in the curses interface the row
+reports the state of the dtrace backend instead: the number of aggregation
+drops it announced (the counters undercount when that number grows), or a
+warning that the backend exited and the counters are frozen. In batch mode the
+same warning goes to stderr.
+.PP
+A task that exits between two samples loses the bytes of the last incomplete
+sample, and memory mapped io is not counted at all.
 .SH AUTHOR
 The original Python iotop implementation was written by Guillaume Chazarain.
 This rewrite in C was started in 2014 by Vyacheslav Trushkin and reworked to

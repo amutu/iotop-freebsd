@@ -14,6 +14,7 @@ You should have received a copy of the GNU General Public License along with thi
 #include "iotop.h"
 
 #include <sched.h>
+#include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -33,6 +34,8 @@ You should have received a copy of the GNU General Public License along with thi
 #endif
 
 const char *str_ioprio_class[]={"-","rt","be","id"};
+
+#ifdef __linux__
 
 // io priority of a task without own one, derived from its scheduling policy and nice value like the kernel does
 inline int ioprio_from_sched(int policy,int nice) {
@@ -59,6 +62,46 @@ inline int get_ioprio(pid_t pid,int sched_prio) {
 	// since Linux 6.5 the bits between the level and the class are hints, they are not part of the priority
 	return io_prio&((IOPRIO_CLASS_MASK<<IOPRIO_CLASS_SHIFT)|IOPRIO_LEVEL_MASK);
 }
+
+#else /* __FreeBSD__ */
+
+/*
+ * FreeBSD has no ioprio(2): the scheduler classes rtprio/idprio are about CPU,
+ * not about io, and the io schedulers do not expose a per task priority. What
+ * is left is exactly what the Linux kernel uses for a task that never called
+ * ioprio_set(2): the scheduling class and the nice value. The column therefore
+ * says "be/N" for a normal task, "rt/N" for a realtime one and "id" for an
+ * idle one, and can not be changed from iotop.
+ */
+
+// the class values of sys/priority.h, kept here so that a header move can not break the build
+#define BSD_PRI_ITHD 1
+#define BSD_PRI_REALTIME 2
+#define BSD_PRI_TIMESHARE 3
+#define BSD_PRI_IDLE 4
+
+inline int ioprio_from_sched(int pri_class,int nice) {
+	int ioprio_nice=(nice+20)/5;
+
+	if (ioprio_nice<0)
+		ioprio_nice=0;
+	if (ioprio_nice>7)
+		ioprio_nice=7;
+	if (pri_class==BSD_PRI_REALTIME)
+		return (IOPRIO_CLASS_RT<<IOPRIO_CLASS_SHIFT)+ioprio_nice;
+	if (pri_class==BSD_PRI_IDLE)
+		return IOPRIO_CLASS_IDLE<<IOPRIO_CLASS_SHIFT;
+	return (IOPRIO_CLASS_BE<<IOPRIO_CLASS_SHIFT)+ioprio_nice;
+}
+
+// the value is already derived from the scheduling class and the nice value
+inline int get_ioprio(pid_t pid,int sched_prio) {
+	(void)pid;
+
+	return sched_prio;
+}
+
+#endif // __linux__
 
 inline int ioprio2class(int ioprio) {
 	return ioprio>>IOPRIO_CLASS_SHIFT;
@@ -87,7 +130,22 @@ inline int ioprio_value(int class,int prio) {
 	return (class<<IOPRIO_CLASS_SHIFT)|prio;
 }
 
+#ifndef __FreeBSD__
+
 inline int set_ioprio(int which,int who,int ioprio_class,int ioprio_prio) {
 	return syscall(SYS_ioprio_set,which,who,ioprio_value(ioprio_class,ioprio_prio));
 }
 
+#else /* __FreeBSD__ */
+
+inline int set_ioprio(int which,int who,int ioprio_class,int ioprio_prio) {
+	(void)which;
+	(void)who;
+	(void)ioprio_class;
+	(void)ioprio_prio;
+	errno=ENOSYS;
+
+	return -1;
+}
+
+#endif

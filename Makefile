@@ -24,6 +24,16 @@
 
 TARGET=iotop
 
+# FreeBSD: the base system provides clang, ncursesw and libutil
+UNAME_S:=$(shell uname -s)
+ifeq ("$(UNAME_S)","FreeBSD")
+IS_FREEBSD:=1
+LIBS+=-lutil
+endif
+
+# both gcc and clang take the single dash form
+CSTDFLAG:=-std=gnu89
+
 SRCS:=$(wildcard src/*.c)
 OBJS:=$(patsubst %c,%o,$(patsubst src/%,bld/%,$(SRCS)))
 DEPS:=$(OBJS:.o=.d)
@@ -66,7 +76,7 @@ HAVEWDTI:=$(shell if $(CC) -Wdate-time -xc -c /dev/null -o /dev/null >/dev/null 
 # old compilers can not generate dependencies
 HAVEDEPS:=$(shell if $(CC) -MM -MT /dev/null -MF /dev/null /dev/null >/dev/null 2>/dev/null;then echo yes;else echo no;fi)
 # old compilers do not understand C standard
-HAVECSTD:=$(shell if $(CC) --std=gnu89 -xc -c /dev/null -o /dev/null >/dev/null 2>/dev/null;then echo yes;else echo no;fi)
+HAVECSTD:=$(shell if $(CC) $(CSTDFLAG) -xc -c /dev/null -o /dev/null >/dev/null 2>/dev/null;then echo yes;else echo no;fi)
 # old compilers do not have -Wformat-signedness; clang only warns on unknown warning options
 HAVEWFSN:=$(shell if $(CC) -Werror -Wformat-signedness -xc -c /dev/null -o /dev/null >/dev/null 2>/dev/null;then echo yes;else echo no;fi)
 # old compilers do not understand -flto=auto
@@ -78,7 +88,7 @@ HAVEFFLO:=$(shell if $(CC) -Werror -ffat-lto-objects -xc -c /dev/null -o /dev/nu
 # old compilers do not understand -pie; clang yields error when stderr is redirected :(
 HAVELPIE:=$(shell if $(CC) -Wno-unused-command-line-argument -pie -xc -c /dev/null -o /dev/null >/dev/null 2>/dev/null;then echo yes;else echo no;fi)
 
-MYCFLAGS:=$(CPPFLAGS) $(CFLAGS) $(NCCC) -Wall -Wextra -Wformat -Wformat-signedness -Werror=format-security -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes -Wundef -Wdate-time -D_FORTIFY_SOURCE=2 --std=gnu89 -fPIE
+MYCFLAGS:=$(CPPFLAGS) $(CFLAGS) $(NCCC) -Wall -Wextra -Wformat -Wformat-signedness -Werror=format-security -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes -Wundef -Wdate-time -D_FORTIFY_SOURCE=2 $(CSTDFLAG) -fPIE
 MYLIBS:=$(NCLD) $(LIBS)
 MYLDFLAGS:=$(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -fPIE -pie
 
@@ -97,8 +107,8 @@ MYCFLAGS:=$(filter-out -Wformat-signedness,$(MYCFLAGS))
 endif
 
 ifeq ("$(HAVECSTD)","no")
-MYCFLAGS:=$(filter-out --std=gnu89,$(MYCFLAGS))
-MYLDFLAGS:=$(filter-out --std=gnu89,$(MYLDFLAGS))
+MYCFLAGS:=$(filter-out $(CSTDFLAG),$(MYCFLAGS))
+MYLDFLAGS:=$(filter-out $(CSTDFLAG),$(MYLDFLAGS))
 MYCFLAGS:=$(filter-out -D_FORTIFY_SOURCE=2,$(MYCFLAGS))
 MYLDFLAGS:=$(filter-out -D_FORTIFY_SOURCE=2,$(MYLDFLAGS))
 endif
@@ -177,6 +187,10 @@ check: $(TARGET)
 	done; \
 	exit $$fail
 
+check-freebsd: $(TARGET)
+	$(E) CHECK-FREEBSD
+	$(Q)sh tests/run-freebsd.sh
+
 scan:
 	$(E) SCAN
 	$(Q)$(SCANBUILD) $(MAKE) --no-print-directory re
@@ -185,8 +199,9 @@ install: $(TARGET)
 	$(E) STRIP $(TARGET)
 	$(Q)$(STRIP) $(TARGET)
 	$(E) INSTALL $(TARGET)
-	$(Q)$(INSTALL) -D -m 0755 $(TARGET) $(BINDIR)/$(TARGET)
-	$(Q)$(INSTALL) -D -m 0644 iotop.8 $(PREFIX)/share/man/man8/iotop.8
+	$(Q)$(INSTALL) -d $(BINDIR) $(PREFIX)/share/man/man8
+	$(Q)$(INSTALL) -m 0755 $(TARGET) $(BINDIR)/$(TARGET)
+	$(Q)$(INSTALL) -m 0644 iotop.8 $(PREFIX)/share/man/man8/iotop.8
 
 uninstall:
 	$(E) UNINSTALL $(TARGET)
@@ -240,4 +255,4 @@ pv:
 
 -include $(DEPS)
 
-.PHONY: all clean check scan install uninstall mkotar re pv
+.PHONY: all clean check check-freebsd scan install uninstall mkotar re pv
